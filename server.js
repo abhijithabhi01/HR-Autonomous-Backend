@@ -32,12 +32,23 @@ const app  = express()
 const PORT = process.env.PORT || 3001
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+// CORS: allow localhost in dev, and your Vercel frontend in production.
+// Add your Vercel URL to this list once deployed, e.g.:
+//   'https://your-hr-app.vercel.app'
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173',
+  process.env.FRONTEND_URL,   // set this in Railway env vars → your Vercel URL
+].filter(Boolean)
+
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:4173',
-  ],
+  origin: (origin, cb) => {
+    // allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin) return cb(null, true)
+    if (allowedOrigins.includes(origin)) return cb(null, true)
+    cb(new Error('CORS: origin not allowed — add it to FRONTEND_URL env var'))
+  },
 }))
 app.use(express.json())
 
@@ -83,11 +94,13 @@ try {
 // Build the Gmail transporter once at startup (reused across requests)
 function createTransporter() {
   const user = process.env.GMAIL_USER
-  const pass = process.env.GMAIL_APP_PASSWORD
+  const pass = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '')  // strip spaces — Google shows them grouped
   if (!user || !pass) return null
   return nodemailer.createTransport({
     service: 'gmail',
     auth: { user, pass },
+    debug: false,
+    logger: false,
   })
 }
 const transporter = createTransporter()
@@ -136,7 +149,7 @@ app.post('/api/sendmail', async (req, res) => {
           <p style="margin:0 0 28px;font-size:15px;color:#475569;line-height:1.7">
             You're joining as <strong style="color:#0f172a">${position}</strong> in the
             <strong style="color:#0f172a">${department}</strong> team,
-            Last date <strong style="color:#0f172a">${formattedStart}</strong>.
+            last date <strong style="color:#0f172a">${formattedStart}</strong>.
             Your onboarding portal will guide you through every step — use the button below to get started.
           </p>
 
@@ -146,12 +159,10 @@ app.post('/api/sendmail', async (req, res) => {
               <a href="${portalLink}"
                 style="display:inline-block;background:#2DD4BF;color:#0C1A1D;font-weight:700;font-size:15px;
                        text-decoration:none;padding:14px 36px;border-radius:12px;letter-spacing:0.2px">
-                Click Here to Access Your Portal →
+                Click Here →
               </a>
             </td></tr>
-            <tr><td align="center" style="padding-top:10px">
-              <p style="margin:0;font-size:11px;color:#94a3b8">Or copy this link: <a href="${portalLink}" style="color:#2DD4BF;text-decoration:none">${portalLink}</a></p>
-            </td></tr>
+          
           </table>
 
           <!-- Credentials box -->
@@ -211,7 +222,7 @@ app.post('/api/sendmail', async (req, res) => {
           </table>
 
           <p style="margin:0 0 4px;font-size:14px;color:#475569">
-            See you on <strong>${formattedStart}</strong>! 🚀
+            Submit before <strong>${formattedStart}</strong>! 🚀
           </p>
           <p style="margin:24px 0 0;font-size:13px;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:20px">
             The HR Team · D Company
@@ -233,7 +244,69 @@ app.post('/api/sendmail', async (req, res) => {
     console.log(`[sendmail] ✅  Sent to ${toEmail} (messageId: ${info.messageId})`)
     return res.json({ success: true, messageId: info.messageId })
   } catch (err) {
-    console.error('[sendmail] ❌  Error:', err.message)
+    // Common causes of Gmail errors:
+    //   "Invalid login" or "Username and Password not accepted"
+    //     → App Password is wrong. Regenerate at myaccount.google.com → Security → App passwords
+    //     → Make sure you copied it WITHOUT spaces (16 chars, no gaps)
+    //   "self signed certificate" / connection errors → network issue, retry
+    const hint =
+      err.message.includes('Invalid login') || err.message.includes('Username and Password') 
+        ? ' | HINT: Regenerate your Gmail App Password — myaccount.google.com → Security → App passwords'
+        : err.message.includes('ECONNREFUSED') || err.message.includes('ETIMEDOUT')
+          ? ' | HINT: Network error — check your internet connection'
+          : ''
+    console.error('[sendmail] ❌  Error:', err.message + hint)
+    return res.status(500).json({ error: err.message + hint })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. POST /api/deleteUser
+//    Deletes a Firebase Auth account by email — called when HR removes a candidate.
+//    Works for both orphaned accounts AND fully set-up accounts.
+//    Requires ADC:  gcloud auth application-default login
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/deleteUser', async (req, res) => {
+  if (!adminReady) {
+    return res.status(503).json({
+      error: 'Firebase Admin not available — set FIREBASE_PROJECT_ID in .env and run: gcloud auth application-default login',
+    })
+  }
+
+  const { uid, email } = req.body
+  if (!uid && (!email || !email.includes('@'))) {
+    return res.status(400).json({ error: 'Either uid or valid email required' })
+  }
+
+  try {
+    // Prefer uid (stored on candidate doc) — faster, no extra lookup
+    // Fall back to email lookup if uid not provided (older candidates)
+    if (uid) {
+      await admin.auth().deleteUser(uid)
+      console.log(`[deleteUser] ✅  Deleted by uid: ${uid}`)
+      return res.json({ success: true, deleted: uid })
+    }
+
+    // Email fallback
+    let userRecord
+    try {
+      userRecord = await admin.auth().getUserByEmail(email)
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        console.log(`[deleteUser] ℹ️  No auth account for ${email} — already absent`)
+        return res.json({ success: true, note: 'account was already absent' })
+      }
+      throw err
+    }
+    await admin.auth().deleteUser(userRecord.uid)
+    console.log(`[deleteUser] ✅  Deleted by email: ${email} (uid: ${userRecord.uid})`)
+    return res.json({ success: true, deleted: email })
+
+  } catch (err) {
+    if (err.code === 'auth/user-not-found') {
+      return res.json({ success: true, note: 'account was already absent' })
+    }
+    console.error('[deleteUser] Error:', err.message)
     return res.status(500).json({ error: err.message })
   }
 })
@@ -301,7 +374,8 @@ app.listen(PORT, () => {
   console.log(`║  HR Onboarding Backend  →  http://localhost:${PORT}     ║`)
   console.log('╠═══════════════════════════════════════════════════════╣')
   console.log('║  POST /api/sendmail            → Gmail email          ║')
-  console.log('║  POST /api/deleteOrphanedAuth  → Firebase Admin (ADC) ║')
+  console.log('║  POST /api/deleteUser          → delete auth account  ║')
+  console.log('║  POST /api/deleteOrphanedAuth  → cleanup orphaned auth ║')
   console.log('║  GET  /api/health              → status               ║')
   console.log('╚═══════════════════════════════════════════════════════╝')
   console.log('')
