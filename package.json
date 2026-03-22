@@ -1,7 +1,7 @@
 {
   "name": "hr-onboarding-backend",
-  "version": "1.0.0",
-  "description": "Local dev backend — email + Firebase Admin helpers",
+  "version": "2.0.0",
+  "description": "HR Onboarding Platform Backend — all Firebase operations centralized",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -9,10 +9,11 @@
     "dev":   "node --watch server.js"
   },
   "dependencies": {
-    "cors":           "^2.8.5",
-    "dotenv":         "^16.4.5",
-    "express":        "^4.18.2",
-    "firebase-admin": "^12.0.0",
-    "nodemailer":     "^6.9.9"
+    "@google-cloud/documentai": "^8.0.0",
+    "cors":                     "^2.8.5",
+    "dotenv":                   "^16.4.5",
+    "express":                  "^4.18.2",
+    "firebase-admin":           "^12.0.0",
+    "nodemailer":               "^6.9.9"
   }
 }
