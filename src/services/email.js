@@ -1,6 +1,3 @@
-// src/services/email.js
-// Builds and sends the candidate welcome email.
-
 import { transporter } from '../config/mailer.js'
 
 export async function sendWelcomeEmail({
@@ -13,7 +10,7 @@ export async function sendWelcomeEmail({
   const formattedStart = startDate
     ? new Date(startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
     : 'TBD'
-  const portalLink = portalUrl || 'http://localhost:5173/login'
+  const portalLink = 'https://autonomous-hr.vercel.app' 
 
   const html = buildHtml({ firstName, position, department, formattedStart, loginEmail, tempPassword, workEmail, portalLink })
 
@@ -48,7 +45,7 @@ function buildHtml({ firstName, position, department, formattedStart, loginEmail
           <p style="margin:0 0 28px;font-size:15px;color:#475569;line-height:1.7">
             You're joining as <strong style="color:#0f172a">${position}</strong> in the
             <strong style="color:#0f172a">${department}</strong> team,
-            starting <strong style="color:#0f172a">${formattedStart}</strong>.
+            Last date to submit documents: <strong style="color:#0f172a">${formattedStart}</strong>.
           </p>
 
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px">
@@ -56,14 +53,10 @@ function buildHtml({ firstName, position, department, formattedStart, loginEmail
               <a href="${portalLink}"
                 style="display:inline-block;background:#2DD4BF;color:#0C1A1D;font-weight:700;font-size:15px;
                        text-decoration:none;padding:14px 36px;border-radius:12px">
-                Click Here to Access Your Portal →
+                Click Here →
               </a>
             </td></tr>
-            <tr><td align="center" style="padding-top:10px">
-              <p style="margin:0;font-size:11px;color:#94a3b8">
-                Or copy: <a href="${portalLink}" style="color:#2DD4BF">${portalLink}</a>
-              </p>
-            </td></tr>
+    
           </table>
 
           <table width="100%" cellpadding="0" cellspacing="0"
@@ -91,9 +84,6 @@ function buildHtml({ firstName, position, department, formattedStart, loginEmail
                   <td style="font-weight:600;color:#2DD4BF">${workEmail}</td>
                 </tr>` : ''}
               </table>
-            </td></tr>
-            <tr><td style="padding:12px 24px 16px;border-top:1px solid #e2e8f0">
-              <p style="margin:0;font-size:12px;color:#94a3b8">⚠️ Please change your password after first login.</p>
             </td></tr>
           </table>
 

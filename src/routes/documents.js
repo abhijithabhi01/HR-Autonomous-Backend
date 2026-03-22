@@ -43,14 +43,20 @@ router.post('/upload', async (req, res) => {
     return res.status(400).json({ error: 'candidateId, docType, base64 and mimeType required' })
 
   try {
-    const ext      = (fileName || 'file').split('.').pop()
-    const path     = `documents/${candidateId}/${docType}_${Date.now()}.${ext}`
-    const fileRef  = storage.file(path)
-    const buffer   = Buffer.from(base64, 'base64')
+    const ext     = (fileName || 'file').split('.').pop()
+    const path    = `documents/${candidateId}/${docType}_${Date.now()}.${ext}`
+    const fileRef = storage.file(path)
+    const buffer  = Buffer.from(base64, 'base64')
 
     await fileRef.save(buffer, { metadata: { contentType: mimeType } })
-    await fileRef.makePublic()
-    const downloadUrl = `https://storage.googleapis.com/${storage.name}/${path}`
+
+    // Generate a signed URL valid for 7 days.
+    // makePublic() fails on buckets with uniform bucket-level access (GCP default).
+    // Signed URLs work regardless of bucket ACL settings.
+    const [downloadUrl] = await fileRef.getSignedUrl({
+      action:  'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+    })
 
     const docData = {
       candidate_id: candidateId, type: docType,

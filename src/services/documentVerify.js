@@ -1,6 +1,3 @@
-// src/services/documentVerify.js
-// Document verification using Google Document AI with Gemini Vision fallback.
-
 import { docAiClient, DOC_AI_PROJECT, DOC_AI_LOCATION, PROCESSOR_IDS } from '../config/documentai.js'
 
 const FIELD_TEMPLATES = {
@@ -43,48 +40,92 @@ function normalizeFields(fields, docType) {
 
 // ── Document AI ───────────────────────────────────────────────
 async function verifyWithDocumentAI(base64, mimeType, documentType) {
-  const processorId = PROCESSOR_IDS[documentType] || PROCESSOR_IDS.passport
-  if (!docAiClient || !DOC_AI_PROJECT || !processorId) {
-    throw new Error('Document AI not configured')
+  // Check all requirements before making the API call
+  if (!docAiClient) {
+    throw new Error('Document AI client not initialized — check GOOGLE_SERVICE_ACCOUNT_JSON')
+  }
+  if (!DOC_AI_PROJECT) {
+    throw new Error('DOCUMENT_AI_PROJECT_ID not set in .env')
   }
 
-  const name     = `projects/${DOC_AI_PROJECT}/locations/${DOC_AI_LOCATION}/processors/${processorId}`
-  const [result] = await docAiClient.processDocument({
-    name,
-    rawDocument: { content: base64, mimeType },
-  })
+  const processorId = PROCESSOR_IDS[documentType] || PROCESSOR_IDS.passport
+  if (!processorId) {
+    throw new Error(
+      'PROCESSOR_ID_DEFAULT is missing or still set to placeholder "your_por_id_here".\n' +
+      'Go to GCP Console → Document AI → your processor → copy the Processor ID → add to .env'
+    )
+  }
 
-  const doc    = result.document
+  const name = `projects/${DOC_AI_PROJECT}/locations/${DOC_AI_LOCATION}/processors/${processorId}`
+
+  let result
+  try {
+    ;[result] = await docAiClient.processDocument({
+      name,
+      rawDocument: { content: base64, mimeType },
+    })
+  } catch (err) {
+    // Surface the underlying gRPC / HTTP error clearly
+    const msg = err?.message || String(err)
+    if (msg.includes('NOT_FOUND') || msg.includes('404')) {
+      throw new Error(
+        `Processor not found: "${processorId}" in project "${DOC_AI_PROJECT}" location "${DOC_AI_LOCATION}". ` +
+        'Verify the Processor ID and DOCUMENT_AI_LOCATION in your .env match what is in GCP Console.'
+      )
+    }
+    if (msg.includes('PERMISSION_DENIED') || msg.includes('403')) {
+      throw new Error(
+        'Permission denied calling Document AI. ' +
+        'Go to GCP Console → IAM → your service account → add role "Document AI API User".'
+      )
+    }
+    throw err
+  }
+
+  const doc    = result?.document || {}
   const fields = {}
 
-  // Extract entities (key-value pairs from ID Document Parser)
-  doc.entities?.forEach(e => {
-    const key   = e.type.toLowerCase().replace(/[^a-z0-9]/g, '_')
+  // Extract entities (ID Document Parser / specialized parsers)
+  ;(doc.entities || []).forEach(e => {
+    const key   = (e.type || '').toLowerCase().replace(/[^a-z0-9]/g, '_')
     const value = e.mentionText || e.normalizedValue?.text || ''
     if (key && value) fields[key] = value
   })
 
-  // Extract form fields (from Form Parser)
-  doc.pages?.forEach(page => {
-    page.formFields?.forEach(f => {
+  // Extract form fields (Form Parser)
+  ;(doc.pages || []).forEach(page => {
+    ;(page.formFields || []).forEach(f => {
       const key   = (f.fieldName?.textAnchor?.content  || '').toLowerCase().replace(/[^a-z0-9]/g, '_').trim()
       const value = (f.fieldValue?.textAnchor?.content || '').trim()
       if (key && value) fields[key] = value
     })
   })
 
-  const normalized = normalizeFields(fields, documentType)
+  // Extract raw text blocks as a fallback for processors that return text only
+  const rawText = (doc.text || '').trim()
+
+  const normalized  = normalizeFields(fields, documentType)
   const entityCount = Object.keys(normalized).length
 
   console.log(`[documentVerify] Document AI extracted ${entityCount} fields for ${documentType}`)
 
+  if (entityCount === 0 && !rawText) {
+    throw new Error(
+      'Document AI returned 0 fields and no text. ' +
+      'For Indian IDs (Aadhaar, PAN), use the "ID Document Parser" processor type in GCP Console — ' +
+      'the generic OCR processor does not extract structured fields.'
+    )
+  }
+
   return {
     ...normalized,
     is_authentic: true,
-    confidence:   entityCount > 3 ? 92 : 75,
-    flags:        entityCount === 0 ? ['No fields extracted — try ID Document Parser processor'] : [],
-    raw_text:     doc.text?.trim() || '',
-    _source:      'document_ai',
+    confidence:   entityCount > 3 ? 92 : rawText ? 70 : 50,
+    flags:        entityCount === 0
+      ? ['No structured fields extracted — raw text only. Consider using ID Document Parser processor.']
+      : [],
+    raw_text: rawText,
+    _source:  'document_ai',
   }
 }
 
