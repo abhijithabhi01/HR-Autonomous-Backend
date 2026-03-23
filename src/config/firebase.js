@@ -54,12 +54,12 @@ try {
 
   // Auto-correct the wrong bucket suffix.
   // GCP console shows .firebasestorage.app but Admin SDK needs .appspot.com
-  if (bucket && bucket.endsWith('.firebasestorage.app')) {
-    const corrected = bucket.replace('.firebasestorage.app', '.appspot.com')
-    console.warn('⚠️   FIREBASE_STORAGE_BUCKET ends with .firebasestorage.app — Admin SDK needs .appspot.com')
-    console.warn(`    Auto-correcting to: ${corrected}`)
-    bucket = corrected
-  }
+  // if (bucket && bucket.endsWith('.firebasestorage.app')) {
+  //   const corrected = bucket.replace('.firebasestorage.app', '.appspot.com')
+  //   console.warn('⚠️   FIREBASE_STORAGE_BUCKET ends with .firebasestorage.app — Admin SDK needs .appspot.com')
+  //   console.warn(`    Auto-correcting to: ${corrected}`)
+  //   bucket = corrected
+  // }
 
   const credentials = resolveCredentials()
 

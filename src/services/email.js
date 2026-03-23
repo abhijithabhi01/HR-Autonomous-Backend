@@ -105,7 +105,7 @@ function buildHtml({ firstName, position, department, formattedStart, loginEmail
           </table>
 
           <p style="margin:0;font-size:14px;color:#475569">
-            Looking forward to seeing you on <strong>${formattedStart}</strong>! 🚀
+            Looking forward to seeing you on! 🚀
           </p>
           <p style="margin:24px 0 0;font-size:13px;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:20px">
             The HR Team · D Company

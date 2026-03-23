@@ -31,8 +31,12 @@ router.get('/:candidateId', async (req, res) => {
   try {
     const snap = await db.collection('documents')
       .where('candidate_id', '==', req.params.candidateId)
-      .orderBy('type').get()
-    res.json(snap.docs.map(d => addExpiryStatus({ id: d.id, ...d.data() })))
+      .get()
+    // Sort in JS — avoids needing a Firestore composite index on (candidate_id + type)
+    const docs = snap.docs
+      .map(d => addExpiryStatus({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.type || '').localeCompare(b.type || ''))
+    res.json(docs)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
@@ -82,6 +86,66 @@ router.post('/upload', async (req, res) => {
     }
 
     console.log(`[documents] Uploaded ${docType} for candidate ${candidateId}`)
+
+    // Auto-tick checklist items based on upload state
+    // Skip profile_photo — it's not a candidate document
+    if (docType !== 'profile_photo') {
+      try {
+        const allDocsSnap = await db.collection('documents')
+          .where('candidate_id', '==', candidateId).get()
+        const allDocs = allDocsSnap.docs.map(d => d.data())
+
+        const requiredTypes = ['passport', 'visa', 'degree', 'employment_letter']
+        const allUploaded = requiredTypes.every(t =>
+          allDocs.some(d => d.type === t)
+        )
+        const allVerified = requiredTypes.every(t =>
+          allDocs.some(d => d.type === t && d.status === 'verified')
+        )
+
+        const checkSnap = await db.collection('checklist_items')
+          .where('candidate_id', '==', candidateId).get()
+
+        if (allUploaded) {
+          const submittedItem = checkSnap.docs.find(d =>
+            d.data().title.toLowerCase() === 'documents submitted'
+          )
+          if (submittedItem && !submittedItem.data().completed) {
+            await db.collection('checklist_items').doc(submittedItem.id).update({
+              completed: true, completed_at: new Date().toISOString(),
+            })
+            console.log('[documents] Auto-ticked: Documents Submitted')
+          }
+        }
+
+        if (allVerified) {
+          const verifiedItem = checkSnap.docs.find(d =>
+            d.data().title.toLowerCase() === 'documents verified'
+          )
+          if (verifiedItem && !verifiedItem.data().completed) {
+            await db.collection('checklist_items').doc(verifiedItem.id).update({
+              completed: true, completed_at: new Date().toISOString(),
+            })
+            console.log('[documents] Auto-ticked: Documents Verified')
+          }
+        }
+
+        // Recalculate progress after any checklist updates
+        if (allUploaded || allVerified) {
+          const freshSnap = await db.collection('checklist_items')
+            .where('candidate_id', '==', candidateId).get()
+          const total     = freshSnap.size
+          const doneCount = freshSnap.docs.filter(d => d.data().completed).length
+          const progress  = total > 0 ? Math.round((doneCount / total) * 100) : 0
+          const onboarding_status = progress === 100 ? 'completed' : progress > 0 ? 'onboarding' : 'pre_joining'
+          await db.collection('candidates').doc(candidateId).update({ onboarding_progress: progress, onboarding_status })
+          console.log(`[documents] Progress recalculated: ${progress}%`)
+        }
+      } catch (checkErr) {
+        console.warn('[documents] Checklist auto-tick failed:', checkErr.message)
+      }
+    }
+
     res.json({ id: docId, ...docData })
   } catch (err) {
     console.error('[documents upload]', err.message)

@@ -72,9 +72,7 @@ router.post('/', async (req, res) => {
       { title: 'System Access Granted', description: 'Access to required tools and platforms',   category: 'it',        sort_order: 5  },
       { title: 'Payroll Setup',         description: 'Salary account and payroll configured',    category: 'hr',        sort_order: 6  },
       { title: 'ID Card Issued',        description: 'Company ID card processed and issued',     category: 'hr',        sort_order: 7  },
-      { title: 'Policy Training',       description: 'Mandatory compliance and policy training', category: 'training',  sort_order: 8  },
-      { title: 'Team Introduction',     description: 'Met with immediate team and manager',      category: 'social',    sort_order: 9  },
-      { title: 'Day 7 Check-in',        description: 'One week wellbeing check-in',              category: 'wellbeing', sort_order: 10 },
+      { title: 'Policy Training',       description: 'Mandatory compliance and policy training', category: 'training', sort_order: 8 },
     ].forEach(item => {
       const ref = db.collection('checklist_items').doc()
       batch.set(ref, { ...item, candidate_id: candidateRef.id, completed: false, completed_at: null })
