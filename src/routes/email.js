@@ -178,4 +178,79 @@ router.post('/idcard', async (req, res) => {
   }
 })
 
+
+// ── ADD THIS BLOCK to src/routes/email.js, before `export default router` ──
+//
+// POST /api/sendmail/notify  — generic HTML email (used for expiry notifications)
+// POST /api/sendmail/expiry  — alias for the same endpoint
+//
+// Both accept: { toEmail, toName, subject, html }
+
+router.post('/notify', async (req, res) => {
+  const { toEmail, toName, subject, html } = req.body
+  if (!toEmail || !subject || !html)
+    return res.status(400).json({ error: 'Missing: toEmail, subject, html' })
+  if (!transporter)
+    return res.status(503).json({ error: 'Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD' })
+  try {
+    const info = await transporter.sendMail({
+      from:    `"D Company HR" <${process.env.GMAIL_USER}>`,
+      to:      toEmail,
+      subject,
+      html,
+    })
+    console.log(`[email/notify] Sent to ${toEmail} (${info.messageId})`)
+    res.json({ success: true, messageId: info.messageId, sentTo: toEmail })
+  } catch (err) {
+    console.error('[email/notify]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Alias so frontend can call either /api/sendmail/expiry or /api/sendmail/notify
+router.post('/expiry', async (req, res) => {
+  const { toEmail, toName, subject, html } = req.body
+  if (!toEmail || !subject || !html)
+    return res.status(400).json({ error: 'Missing: toEmail, subject, html' })
+  if (!transporter)
+    return res.status(503).json({ error: 'Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD' })
+  try {
+    const info = await transporter.sendMail({
+      from:    `"D Company HR" <${process.env.GMAIL_USER}>`,
+      to:      toEmail,
+      subject,
+      html,
+    })
+    console.log(`[email/expiry] Sent to ${toEmail} (${info.messageId})`)
+    res.json({ success: true, messageId: info.messageId, sentTo: toEmail })
+  } catch (err) {
+    console.error('[email/expiry]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+
+
+// POST /api/sendmail/notify  — generic pre-built HTML email (expiry notices etc.)
+// Accepts: { toEmail, toName, subject, html }
+router.post('/notify', async (req, res) => {
+  const { toEmail, toName, subject, html } = req.body
+  if (!toEmail || !subject || !html)
+    return res.status(400).json({ error: 'Missing required fields: toEmail, subject, html' })
+  if (!transporter)
+    return res.status(503).json({ error: 'Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD' })
+  try {
+    const info = await transporter.sendMail({
+      from:    `"D Company HR" <${process.env.GMAIL_USER}>`,
+      to:      toEmail,
+      subject,
+      html,
+    })
+    console.log(`[email/notify] ✅ Sent to ${toEmail} (${info.messageId})`)
+    res.json({ success: true, messageId: info.messageId, sentTo: toEmail })
+  } catch (err) {
+    console.error('[email/notify]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
 export default router

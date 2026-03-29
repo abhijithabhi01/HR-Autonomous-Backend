@@ -21,6 +21,7 @@ import provisioningRouter from './src/routes/provisioning.js'
 import authRouter        from './src/routes/auth.js'
 import emailRouter       from './src/routes/email.js'
 import policyRouter      from './src/routes/policy.js'
+import extractOfferLetterRouter from './src/routes/extractOfferLetter.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
 
 const app  = express()
@@ -50,7 +51,7 @@ app.use('/api/provisioning', provisioningRouter)
 app.use('/api/auth',         authRouter)
 app.use('/api/sendmail',     emailRouter)
 app.use('/api/policy',       policyRouter)
-
+app.use('/api/candidates', extractOfferLetterRouter)
 // ── Health check ──────────────────────────────────────────────
 app.get('/api/health', (_, res) => {
   res.json({ ok: true, port: PORT, timestamp: new Date().toISOString() })
