@@ -25,6 +25,148 @@ async function recalcProgress(candidateId) {
   }
 }
 
+// ── Cross-document field comparison ──────────────────────────
+// Compares name, date_of_birth, and address across all verified
+// documents and raises HR alerts for any mismatches found.
+//
+// Field sources per document type:
+//   passport          → name, date_of_birth
+//   aadhaar           → name, date_of_birth, address
+//   pan_card          → name, date_of_birth
+//   bank_details      → account_holder (≡ name)
+//   degree            → student_name   (≡ name)
+//   employment_letter → employee_name  (≡ name)
+//   visa              → holder_name    (≡ name)
+//
+// Returns: Array of mismatch strings (empty = all clear)
+function compareDocumentFields(docs) {
+  // ── Normalise helpers ──────────────────────────────────────
+  const normName = v =>
+    (v || '').toUpperCase().replace(/[^A-Z\s]/g, '').replace(/\s+/g, ' ').trim()
+
+  const normDob = v => {
+    if (!v) return ''
+    // Accept DD/MM/YYYY, YYYY-MM-DD, DD-MM-YYYY, DD MMM YYYY etc.
+    const s = v.replace(/\s+/g, ' ').trim()
+    // Try to parse → normalise to DD/MM/YYYY
+    const d = new Date(s)
+    if (!isNaN(d)) {
+      const dd = String(d.getDate()).padStart(2, '0')
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      return `${dd}/${mm}/${d.getFullYear()}`
+    }
+    // Already DD/MM/YYYY or similar — strip non-numeric separators
+    return s.replace(/[-.\s]/g, '/')
+  }
+
+  const normAddr = v =>
+    (v || '').toUpperCase().replace(/[^A-Z0-9\s,]/g, '').replace(/\s+/g, ' ').trim()
+
+  // ── Extract comparable fields from each document ───────────
+  const nameField = doc => {
+    const ex = doc.extracted_data || {}
+    return normName(
+      ex.name || ex.holder_name || ex.account_holder ||
+      ex.student_name || ex.employee_name || ''
+    )
+  }
+
+  const dobField = doc => {
+    const ex = doc.extracted_data || {}
+    return normDob(ex.date_of_birth || ex.dob || '')
+  }
+
+  const addrField = doc => {
+    const ex = doc.extracted_data || {}
+    return normAddr(ex.address || '')
+  }
+
+  // ── Only compare docs that were actually verified ──────────
+  const verified = docs.filter(d => d.status === 'verified' && d.extracted_data)
+
+  if (verified.length < 2) return []   // nothing to compare yet
+
+  const mismatches = []
+
+  // ── Name comparison ───────────────────────────────────────
+  const namesWithSource = verified
+    .map(d => ({ label: d.label || d.type, name: nameField(d) }))
+    .filter(x => x.name)
+
+  if (namesWithSource.length >= 2) {
+    const unique = [...new Set(namesWithSource.map(x => x.name))]
+    if (unique.length > 1) {
+      const detail = namesWithSource
+        .map(x => `${x.label}: "${x.name}"`)
+        .join(' | ')
+      mismatches.push(`Name mismatch across documents — ${detail}`)
+    }
+  }
+
+  // ── Date of birth comparison ──────────────────────────────
+  const dobsWithSource = verified
+    .map(d => ({ label: d.label || d.type, dob: dobField(d) }))
+    .filter(x => x.dob)
+
+  if (dobsWithSource.length >= 2) {
+    const unique = [...new Set(dobsWithSource.map(x => x.dob))]
+    if (unique.length > 1) {
+      const detail = dobsWithSource
+        .map(x => `${x.label}: "${x.dob}"`)
+        .join(' | ')
+      mismatches.push(`Date of birth mismatch across documents — ${detail}`)
+    }
+  }
+
+  // ── Address comparison (only docs that carry an address) ──
+  const addrsWithSource = verified
+    .map(d => ({ label: d.label || d.type, addr: addrField(d) }))
+    .filter(x => x.addr)
+
+  if (addrsWithSource.length >= 2) {
+    // Fuzzy: both must share at least 60% of tokens
+    const tokenSet = addr => new Set(addr.split(/[\s,]+/).filter(Boolean))
+    const similarity = (a, b) => {
+      const sa = tokenSet(a), sb = tokenSet(b)
+      const inter = [...sa].filter(t => sb.has(t)).length
+      return inter / Math.max(sa.size, sb.size, 1)
+    }
+
+    // Compare each pair
+    for (let i = 0; i < addrsWithSource.length; i++) {
+      for (let j = i + 1; j < addrsWithSource.length; j++) {
+        const A = addrsWithSource[i], B = addrsWithSource[j]
+        if (similarity(A.addr, B.addr) < 0.6) {
+          mismatches.push(
+            `Address mismatch — ${A.label}: "${A.addr}" vs ${B.label}: "${B.addr}"`
+          )
+        }
+      }
+    }
+  }
+
+  return mismatches
+}
+
+// ── Create Firestore alert documents for HR ───────────────────
+async function createMismatchAlerts(candidateId, candidateName, mismatches) {
+  const batch = db.batch()
+  for (const mismatch of mismatches) {
+    const ref = db.collection('alerts').doc()
+    batch.set(ref, {
+      candidate_id:   candidateId,
+      candidate_name: candidateName,
+      type:           'document_mismatch',
+      severity:       'high',
+      message:        mismatch,
+      resolved:       false,
+      created_at:     now(),
+    })
+    console.log(`[final-submit] Alert created: ${mismatch}`)
+  }
+  await batch.commit()
+}
+
 // GET /api/candidates
 router.get('/', async (req, res) => {
   try {
@@ -199,8 +341,10 @@ router.put('/:id/complete-onboarding', async (req, res) => {
 // ── POST /api/candidates/:id/final-submit ─────────────────────
 // Called when the candidate clicks "Final Submit" on the checklist.
 // 1. Guards against double-submission.
-// 2. Auto-ticks "ID Card Issued" in the checklist.
-// 3. Sends ID card + onboarding-complete email to the candidate's personal email.
+// 2. Runs cross-document field comparison (name / DOB / address).
+//    Creates high-severity HR alerts for every mismatch found.
+// 3. Auto-ticks "ID Card Issued" in the checklist.
+// 4. Sends ID card + onboarding-complete email to the candidate.
 router.post('/:id/final-submit', async (req, res) => {
   const { id } = req.params
   try {
@@ -213,7 +357,27 @@ router.post('/:id/final-submit', async (req, res) => {
       return res.json({ success: true, alreadySubmitted: true })
     }
 
-    // 1. Tick "ID Card Issued" in checklist
+    // ── STEP 1: Cross-document field comparison ───────────────
+    let documentMismatches = []
+    try {
+      const docsSnap = await db.collection('documents')
+        .where('candidate_id', '==', id).get()
+      const allDocs = docsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+
+      documentMismatches = compareDocumentFields(allDocs)
+
+      if (documentMismatches.length > 0) {
+        console.warn(`[final-submit] ${documentMismatches.length} mismatch(es) found for ${id}:`, documentMismatches)
+        await createMismatchAlerts(id, c.full_name, documentMismatches)
+      } else {
+        console.log(`[final-submit] All document fields match for candidate ${id}`)
+      }
+    } catch (compareErr) {
+      // Non-fatal — log and continue so submission is never blocked by comparison errors
+      console.warn('[final-submit] Document comparison failed (non-fatal):', compareErr.message)
+    }
+
+    // ── STEP 2: Tick "ID Card Issued" in checklist ────────────
     const checkSnap = await db.collection('checklist_items')
       .where('candidate_id', '==', id).get()
     const idCardItem = checkSnap.docs.find(d => d.data().title === 'ID Card Issued')
@@ -223,19 +387,23 @@ router.post('/:id/final-submit', async (req, res) => {
       })
     }
 
-    // 2. Mark final submission timestamp
-    await db.collection('candidates').doc(id).update({ final_submitted_at: now() })
+    // ── STEP 3: Mark final submission timestamp ───────────────
+    await db.collection('candidates').doc(id).update({
+      final_submitted_at: now(),
+      document_mismatches: documentMismatches,          // persist for HR dashboard
+      has_document_mismatches: documentMismatches.length > 0,
+    })
 
-    // 3. Recalculate progress
+    // ── STEP 4: Recalculate progress ──────────────────────────
     await recalcProgress(id)
 
-    // 4. Fetch profile photo (if uploaded)
+    // ── STEP 5: Fetch profile photo (if uploaded) ─────────────
     const photoSnap = await db.collection('documents')
       .where('candidate_id', '==', id)
       .where('type', '==', 'profile_photo').get()
     const photoUrl = photoSnap.empty ? null : photoSnap.docs[0].data().download_url
 
-    // 5. Send ID card + completion email to personal email
+    // ── STEP 6: Send ID card + completion email ───────────────
     const toEmail  = c.personal_email || c.login_email
     const empId    = 'DC' + id.slice(-4).toUpperCase()
     const joinDate = c.start_date
@@ -269,7 +437,15 @@ router.post('/:id/final-submit', async (req, res) => {
       }
     }
 
-    res.json({ success: true, idCardSent, alreadySubmitted: false, empId })
+    res.json({
+      success: true,
+      idCardSent,
+      alreadySubmitted: false,
+      empId,
+      // Surface mismatch info so the frontend can show a warning banner
+      documentMismatches,
+      hasMismatches: documentMismatches.length > 0,
+    })
   } catch (err) {
     console.error('[final-submit]', err.message)
     res.status(500).json({ error: err.message })
