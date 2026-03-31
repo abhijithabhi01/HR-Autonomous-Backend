@@ -44,8 +44,8 @@ try {
     console.warn('    → Document AI extraction will fall back to Gemini until this is set')
   } else {
     console.log('✅  Document AI client initialised')
-    console.log('    Project:', DOC_AI_PROJECT, '| Location:', DOC_AI_LOCATION)
-    console.log('    Default processor ID:', DEFAULT_ID)
+    // console.log('    Project:', DOC_AI_PROJECT, '| Location:', DOC_AI_LOCATION)
+    // console.log('    Default processor ID:', DEFAULT_ID)
   }
 } catch (err) {
   console.warn('⚠️   Document AI unavailable:', err.message)

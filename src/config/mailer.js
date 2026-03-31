@@ -13,5 +13,5 @@ function createTransporter() {
 
 export const transporter = createTransporter()
 
-if (transporter) console.log('✅  Gmail ready →', process.env.GMAIL_USER)
+if (transporter) console.log('✅  Gmail ready ')
 else             console.warn('⚠️   Gmail not configured — add GMAIL_USER and GMAIL_APP_PASSWORD to .env')

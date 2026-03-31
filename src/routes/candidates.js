@@ -189,29 +189,18 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const fields = req.body
   try {
-    const avatar    = fields.full_name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
-    const nameParts = fields.full_name.toLowerCase().trim().split(/\s+/)
-    const workEmail = nameParts.join('.') + '@dcompany.com'
+    const avatar        = fields.full_name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
     const personalEmail = fields.personal_email?.trim() || null
 
-    // Uniqueness checks
+    // Uniqueness check on personal email only — work email is assigned at final-submit
     if (personalEmail) {
       const check = await db.collection('candidates').where('personal_email', '==', personalEmail).get()
       if (!check.empty) return res.status(409).json({ error: `A candidate with "${personalEmail}" already exists.` })
     }
-    let finalEmail = workEmail
-    const existing = await db.collection('candidates').where('work_email', '==', workEmail).get()
-    if (!existing.empty) {
-      for (let s = 2; s <= 99; s++) {
-        const e     = nameParts.join('.') + s + '@dcompany.com'
-        const taken = await db.collection('candidates').where('work_email', '==', e).get()
-        if (taken.empty) { finalEmail = e; break }
-      }
-    }
 
-    // 1. Candidate doc
+    // 1. Candidate doc — work_email is null until final-submit generates it
     const candidateRef = await db.collection('candidates').add({
-      avatar, full_name: fields.full_name, work_email: finalEmail,
+      avatar, full_name: fields.full_name, work_email: null,
       personal_email: personalEmail, position: fields.position,
       department: fields.department, start_date: fields.start_date || null,
       manager: fields.manager || null, location: fields.location || null,
@@ -236,18 +225,18 @@ router.post('/', async (req, res) => {
     })
     await batch.commit()
 
-    // 3. IT provisioning
+    // 3. IT provisioning — work_email filled in at final-submit
     await db.collection('provisioning_requests').add({
       candidate_id: candidateRef.id, candidate_name: fields.full_name,
-      work_email: finalEmail, position: fields.position, department: fields.department,
+      work_email: null, position: fields.position, department: fields.department,
       manager: fields.manager || null, location: fields.location || null,
       start_date: fields.start_date || null, status: 'pending',
       systems_provisioned: {}, created_at: now(),
     })
 
-    // 4. Firebase Auth
+    // 4. Firebase Auth — login is always personal email (work email assigned at final-submit)
     const tempPassword = 'Welcome' + Math.floor(1000 + Math.random() * 9000) + '!'
-    const loginEmail   = personalEmail || finalEmail
+    const loginEmail   = personalEmail
     let authCreated = false, authUid = null
 
     try {
@@ -286,19 +275,19 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 5. Store credentials
+    // 5. Store credentials — work_email set at final-submit
     await db.collection('candidates').doc(candidateRef.id).update({
       login_email: loginEmail, temp_password: tempPassword,
-      auth_created: authCreated, auth_uid: authUid, work_email: finalEmail,
+      auth_created: authCreated, auth_uid: authUid,
     })
 
-    // 6. Welcome email
+    // 6. Welcome email — sent only if personal email provided; no work email yet
     let emailSent = false
     if (personalEmail) {
       try {
         await sendWelcomeEmail({
           toEmail: personalEmail, toName: fields.full_name,
-          loginEmail, tempPassword, workEmail: finalEmail,
+          loginEmail, tempPassword, workEmail: null,
           position: fields.position, department: fields.department,
           startDate: fields.start_date,
           portalUrl: (req.headers.origin || '') + '/login',
@@ -311,7 +300,7 @@ router.post('/', async (req, res) => {
 
     res.status(201).json({
       id: candidateRef.id, full_name: fields.full_name,
-      loginEmail, workEmail: finalEmail, tempPassword,
+      loginEmail, workEmail: null, tempPassword,
       authCreated, emailSent,
     })
   } catch (err) {
@@ -377,33 +366,70 @@ router.post('/:id/final-submit', async (req, res) => {
       console.warn('[final-submit] Document comparison failed (non-fatal):', compareErr.message)
     }
 
-    // ── STEP 2: Tick "ID Card Issued" in checklist ────────────
-    const checkSnap = await db.collection('checklist_items')
-      .where('candidate_id', '==', id).get()
-    const idCardItem = checkSnap.docs.find(d => d.data().title === 'ID Card Issued')
-    if (idCardItem && !idCardItem.data().completed) {
-      await db.collection('checklist_items').doc(idCardItem.id).update({
-        completed: true, completed_at: now(),
-      })
+    // ── STEP 2: Generate & assign company work email ──────────
+    let finalWorkEmail = c.work_email   // reuse if already set (re-submit guard)
+    if (!finalWorkEmail) {
+      const nameParts = c.full_name.toLowerCase().trim().split(/\s+/)
+      const base      = nameParts.join('.') + '@dcompany.com'
+      const existing  = await db.collection('candidates').where('work_email', '==', base).get()
+      if (existing.empty) {
+        finalWorkEmail = base
+      } else {
+        for (let s = 2; s <= 99; s++) {
+          const candidate = nameParts.join('.') + s + '@dcompany.com'
+          const taken     = await db.collection('candidates').where('work_email', '==', candidate).get()
+          if (taken.empty) { finalWorkEmail = candidate; break }
+        }
+      }
+      // Persist work email on candidate + provisioning request
+      await db.collection('candidates').doc(id).update({ work_email: finalWorkEmail })
+      const provSnap = await db.collection('provisioning_requests')
+        .where('candidate_id', '==', id).get()
+      if (!provSnap.empty) {
+        await db.collection('provisioning_requests').doc(provSnap.docs[0].id).update({
+          work_email: finalWorkEmail,
+          systems_provisioned: { ...provSnap.docs[0].data().systems_provisioned, email: true },
+          status: 'completed',
+          updated_at: now(),
+        })
+      }
+      console.log(`[final-submit] Work email assigned: ${finalWorkEmail}`)
     }
 
-    // ── STEP 3: Mark final submission timestamp ───────────────
+    // ── STEP 3: Tick checklist items ──────────────────────────
+    const checkSnap = await db.collection('checklist_items')
+      .where('candidate_id', '==', id).get()
+
+    const itemsToTick = ['ID Card Issued', 'Company Email Created', 'System Access Granted']
+    const tickBatch   = db.batch()
+    let   ticked      = 0
+    for (const title of itemsToTick) {
+      const item = checkSnap.docs.find(d => d.data().title === title)
+      if (item && !item.data().completed) {
+        tickBatch.update(item.ref, { completed: true, completed_at: now() })
+        ticked++
+      }
+    }
+    if (ticked > 0) await tickBatch.commit()
+    console.log(`[final-submit] Ticked ${ticked} checklist item(s) for ${id}`)
+
+    // ── STEP 4: Mark final submission timestamp ───────────────
     await db.collection('candidates').doc(id).update({
       final_submitted_at: now(),
-      document_mismatches: documentMismatches,          // persist for HR dashboard
+      document_mismatches: documentMismatches,
       has_document_mismatches: documentMismatches.length > 0,
     })
 
-    // ── STEP 4: Recalculate progress ──────────────────────────
+    // ── STEP 5: Recalculate progress ──────────────────────────
     await recalcProgress(id)
 
-    // ── STEP 5: Fetch profile photo (if uploaded) ─────────────
+    // ── STEP 6: Fetch profile photo (if uploaded) ─────────────
     const photoSnap = await db.collection('documents')
       .where('candidate_id', '==', id)
       .where('type', '==', 'profile_photo').get()
     const photoUrl = photoSnap.empty ? null : photoSnap.docs[0].data().download_url
 
-    // ── STEP 6: Send ID card + completion email ───────────────
+    // ── STEP 7: Send ID card + completion email with work email ──
     const toEmail  = c.personal_email || c.login_email
     const empId    = 'DC' + id.slice(-4).toUpperCase()
     const joinDate = c.start_date
@@ -418,7 +444,7 @@ router.post('/:id/final-submit', async (req, res) => {
           toName:     c.full_name,
           position:   c.position,
           department: c.department,
-          workEmail:  c.work_email,
+          workEmail:  finalWorkEmail,
           empId,
           joinDate,
           initials,
@@ -431,7 +457,7 @@ router.post('/:id/final-submit', async (req, res) => {
           html:    idCardHtml,
         })
         idCardSent = true
-        console.log(`[final-submit] ID card email sent to ${toEmail}`)
+        console.log(`[final-submit] ID card email sent to ${toEmail} with work email ${finalWorkEmail}`)
       } catch (emailErr) {
         console.warn('[final-submit] Email failed:', emailErr.message)
       }
@@ -442,7 +468,7 @@ router.post('/:id/final-submit', async (req, res) => {
       idCardSent,
       alreadySubmitted: false,
       empId,
-      // Surface mismatch info so the frontend can show a warning banner
+      workEmail: finalWorkEmail,
       documentMismatches,
       hasMismatches: documentMismatches.length > 0,
     })

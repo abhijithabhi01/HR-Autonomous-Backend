@@ -47,7 +47,7 @@ function configRef() {
 const FALLBACK_POLICY = `
 COMPANY INFORMATION:
 - Company Name: D Company
-- Headquarters: 4th Floor, InfoPark Building, Kochi, Kerala 682030, India
+- Headquarters: 10th Floor, InfoPark Building, Kochi, Kerala 682030, India
 - General Inquiries: info@dcompany.com
 - HR Contact: hr@dcompany.com
 

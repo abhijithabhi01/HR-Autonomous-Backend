@@ -71,9 +71,9 @@ try {
     })
     const source = process.env.SA_CLIENT_EMAIL ? 'individual SA_ fields' : 'GOOGLE_SERVICE_ACCOUNT_JSON'
     console.log(`✅  Firebase Admin initialised (${source})`)
-    console.log('    Project:', projectId)
-    console.log('    SA email:', credentials.client_email)
-    if (bucket) console.log('    Storage bucket:', bucket)
+    // console.log('    Project:', projectId)
+    // console.log('    SA email:', credentials.client_email)
+    if (bucket) console.log('    Storage bucket:')
   } else {
     // ADC fallback — only works locally with: gcloud auth application-default login
     admin.initializeApp({ projectId, storageBucket: bucket })
